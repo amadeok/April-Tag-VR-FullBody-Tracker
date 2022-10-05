@@ -41,6 +41,8 @@ struct VideoStream
     REFLECTABLE_FIELD(double, quadDecimate) = 1;
     REFLECTABLE_FIELD(bool, circularWindow) = true;
     REFLECTABLE_FIELD(double, searchWindow) = 0.25;
+    REFLECTABLE_FIELD(std::string, debug) = "0";
+
     REFLECTABLE_END;
 };
 

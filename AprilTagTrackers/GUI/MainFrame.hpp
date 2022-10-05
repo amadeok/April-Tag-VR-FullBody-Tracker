@@ -32,13 +32,13 @@ public:
     void ShowPopup(const U8String& msg, PopupStyle style);
 
     void SetStatus(bool status, StatusItem item);
-
+    wxTextCtrl* logText = nullptr;
     /// thread safe.
     void UpdatePreview(const cv::Mat& image, PreviewId id = PreviewId::Main);
     /// thread safe.
     bool IsPreviewVisible(PreviewId id = PreviewId::Main);
     void SetPreviewVisible(bool visible = true, PreviewId id = PreviewId::Main, bool userCanDestroy = true);
-
+    void print(char* buf);
     /// thread safe.
     /// Get the manual calibration currently shown in the UI.
     cfg::ManualCalib::Real GetManualCalib();

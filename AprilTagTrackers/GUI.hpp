@@ -3,7 +3,6 @@
 #include "Config.hpp"
 #include "Localization.hpp"
 #include "RefPtr.hpp"
-
 #include <opencv2/core.hpp>
 
 #include <functional>
@@ -75,11 +74,13 @@ private:
     PreviewId id;
 };
 
+class MyApp;
 /// Thread safe GUI interface, anything that needs to happen
 /// on the main thread will get wrapped in a CallAfter here.
 class GUI
 {
 public:
+    MyApp* MainApp = nullptr;
     GUI(RefPtr<ITrackerControl> _tracker, const Localization& _lc, UserConfig& _config);
     ~GUI();
 
@@ -100,6 +101,7 @@ public:
     /// Set if the manual calib window is visible.
     void SetManualCalibVisible(bool visible = true);
 
+    void print(char* buf);
     /// Defined in GUI/MainFrame.h, but used as opaque ptr, not to be included in headers.
     class MainFrame;
 

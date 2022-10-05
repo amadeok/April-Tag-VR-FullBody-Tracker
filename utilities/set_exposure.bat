@@ -1,12 +1,12 @@
 
 ::set your IP webcam ip bellow. Do not append http:// or /video here!
 
-set addr=192.168.1.102:8080
+set addr=192.168.1.218:8080
 
 ::set the wanted exposure. Set this to as low as you can while the image is still bright enough.
 ::in general, 10000 is enough for regular usage, while 5000 will allow extremely fast movement.
 
-set exposure=7000
+set exposure=10000
 
 
 curl %addr%/settings/manual_sensor?set=on

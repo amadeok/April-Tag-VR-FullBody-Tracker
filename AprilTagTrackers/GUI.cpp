@@ -89,6 +89,11 @@ void GUI::SetManualCalibVisible(bool visible)
     ForwardToMainThread(impl, &MainFrame::SetManualCalibVisible, std::move(visible));
 }
 
+void GUI::print(char* buf)
+{
+    this->impl->print(buf);
+}
+
 PreviewControl::PreviewControl(RefPtr<GUI> _gui, PreviewId _id)
     : gui(_gui), id(_id)
 {

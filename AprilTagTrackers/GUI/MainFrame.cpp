@@ -9,6 +9,9 @@
 // Application icon in source code, embedding an image as a string literal
 #include "resources/apriltag.xpm"
 
+
+
+
 GUI::MainFrame::MainFrame(RefPtr<ITrackerControl> _tracker, const Localization& _lc, UserConfig& _config)
     : wxFrame(nullptr, wxID_ANY, _lc.APP_TITLE),
       tracker(_tracker), lc(_lc), config(_config),
@@ -28,6 +31,7 @@ GUI::MainFrame::MainFrame(RefPtr<ITrackerControl> _tracker, const Localization& 
     auto pages = NewWindow<wxNotebook>(static_cast<wxFrame*>(this), wxID_ANY, wxDefaultPosition, wxDefaultSize, wxNB_TOP);
     // proportion of 1 means it will expand horizontally in the box sizer
     topSizer->Add(pages, wxSizerFlags(1).Expand());
+
 
     CreateCameraPage(pages);
     CreateParamsPage(pages);
@@ -166,6 +170,12 @@ void GUI::MainFrame::SetPreviewVisible(bool visible, PreviewId id, bool userCanD
     }
 }
 
+void GUI::MainFrame::print(char* buf)
+{
+    config.videoStreams[0]->debug = "helloss";
+    //params.
+}
+
 void GUI::MainFrame::SaveParams()
 {
     params.Submit();
@@ -198,10 +208,13 @@ void GUI::MainFrame::CreateCameraPage(RefPtr<wxNotebook> pages)
 {
     using namespace Form;
 
+
+
     auto panel = NewWindow<wxPanel>(pages);
     pages->AddPage(panel, lc.TAB_CAMERA, true);
 
     auto boxSizer = NewSizer<wxBoxSizer>(panel, wxHORIZONTAL);
+
     cam = FormBuilder(panel, boxSizer);
 
     cam.PushSizer<wxFlexGridSizer>(2, wxSize(20, 10))
@@ -245,7 +258,8 @@ void GUI::MainFrame::CreateCameraPage(RefPtr<wxNotebook> pages)
         .Add(Button{"Preview output", [this](auto& evt)
             {
                 SetPreviewVisible(true);
-            }});
+            }})
+                ;
 
     manualCalibCheckBox =
         cam.AddGet(CheckBoxButton{lc.CAMERA_CALIBRATION_MODE,
@@ -304,7 +318,7 @@ void GUI::MainFrame::CreateParamsPage(RefPtr<wxNotebook> pages)
         {1, 1.5, 2, 3, 4, 5};
 
     RefPtr<cfg::VideoStream> streamConfig = config.videoStreams[0];
-
+    //auto ip = InputText{ streamConfig->debug };
     params.Border(wxALL, 5)
         .PushSizer<wxFlexGridSizer>(4, wxSize(10, 10))
         .Add(Labeled{lc.PARAMS_LANGUAGE,
@@ -330,6 +344,9 @@ void GUI::MainFrame::CreateParamsPage(RefPtr<wxNotebook> pages)
             InputText{streamConfig->camera.fps}})
         .Add(Labeled{lc.PARAMS_CAMERA_NAME_SETTINGS, lc.PARAMS_CAMERA_TOOLTIP_SETTINGS,
             CheckBox{streamConfig->camera.openDirectShowSettings}})
+        .Add(Labeled{ "hellox", lc.PARAMS_CAMERA_TOOLTIP_SETTINGS,
+            InputText{streamConfig->debug} })
+
         .PopSizer()
         .PushStaticBoxSizer("LIGHTING")
         .PushSizer<wxFlexGridSizer>(4, wxSize(10, 10));
@@ -400,6 +417,7 @@ void GUI::MainFrame::CreateLicensePage(RefPtr<wxNotebook> pages)
     pages->AddPage(panel, lc.TAB_LICENSE);
 
     auto boxSizer = NewSizer<wxBoxSizer>(panel, wxHORIZONTAL);
+
 
     auto nb = NewWindow<wxNotebook>(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxNB_TOP);
     boxSizer->Add(nb, wxSizerFlags(1).Expand());

@@ -15,6 +15,7 @@ target_sources(AprilTagTrackers PRIVATE
     MyApp.cpp
     tagCustom29h10.cpp
     ImageDrawing.cpp
+    pipes.cpp
 
     GUI.cpp
     GUI/MainFrame.cpp

@@ -14,7 +14,7 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 #include <ps3eye/PSEyeVideoCapture.h>
-
+#include "MyApp.hpp"
 #include <algorithm>
 #include <array>
 #include <exception>
@@ -23,6 +23,7 @@
 #include <random>
 #include <sstream>
 #include <vector>
+#include "pipes.h"
 
 Tracker::Tracker(UserConfig& _userConfig, CalibrationConfig& _calibConfig, ArucoConfig& _arucoConfig, const Localization& _lc)
     : connection(std::make_unique<Connection>(_userConfig)),
@@ -783,6 +784,8 @@ void Tracker::CalibrateTracker()
 
     auto preview = gui->CreatePreviewControl();
     RefPtr<cfg::CameraCalibration> camCalib = calib_config.cameras[0];
+    char pipeBuffer[300];
+    DWORD nbWritten = 0;
 
     // run loop until we stop it
     while (cameraRunning && mainThreadRunning)
@@ -821,6 +824,39 @@ void Tracker::CalibrateTracker()
                 if (cv::aruco::estimatePoseBoard(corners, ids, arBoard, camCalib->cameraMatrix, camCalib->distortionCoeffs, boardRvec[i], boardTvec[i], false) > 0) // try to estimate current trackers pose
                 {
                     cv::aruco::drawAxis(image, camCalib->cameraMatrix, camCalib->distortionCoeffs, boardRvec[i], boardTvec[i], 0.1f); // if found, draw axis and mark it found
+
+                    char buf [300];
+                    float x = boardRvec[0][0];
+                    float y = boardRvec[0][1];
+                    float z = boardRvec[0][2];
+                    sprintf(buf, "id %d vector %f %f %f",i,  x, y, z);
+                    ATT_LOG_ERROR(buf);
+                    //wxLogMessage(buf);
+                    gui->MainApp->print(buf);
+                    if (gui->MainApp->ConnectToSlimeVr) {
+
+                        pipeBuffer[0] = i;
+                        memcpy(pipeBuffer + 1, &boardRvec[i][0], 8);
+                        memcpy(pipeBuffer + 9, &boardRvec[i][1], 8);
+                        memcpy(pipeBuffer + 17, &boardRvec[i][2], 8);
+
+
+
+                        cv::Quatd q = cv::Quatd::createFromRvec(boardRvec[i]);
+
+
+                        q = cv::Quatd{ 0, 0, 1, 0 } *(wrotation * q) * cv::Quatd{ 0, 0, 1, 0 };
+
+                        memcpy(pipeBuffer + 25, &q.w, 8);
+                        memcpy(pipeBuffer + 33, &q.x, 8);
+                        memcpy(pipeBuffer + 41, &q.y, 8);
+                        memcpy(pipeBuffer + 49, &q.z, 8);
+
+                        pipe_write(gui->MainApp->SlimeVrPipeHandle, pipeBuffer, 57, nbWritten);
+                    }
+
+
+
                     boardFound[i] = true;
                 }
                 else
