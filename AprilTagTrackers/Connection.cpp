@@ -6,13 +6,15 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/core/affine.hpp>
-
+#include "GUI.hpp"
 #include <filesystem>
 #include <thread>
+#include "MyApp.hpp"
 
 Connection::Connection(const UserConfig& _user_config)
     : user_config(_user_config)
 {
+ 
 // TODO: Pass the IPC client* in as an argument
 #ifdef ATT_OS_WINDOWS
     auto* namedPipe = new IPC::WindowsNamedPipe("ApriltagPipeIn");
@@ -23,9 +25,10 @@ Connection::Connection(const UserConfig& _user_config)
 #endif
 }
 
-void Connection::StartConnection()
+void Connection::StartConnection(RefPtr<GUI> gui_)
 {
     GetAndResetErrorState();
+    this->gui = gui_;
 
     if (status == WAITING)
     {
@@ -39,6 +42,186 @@ void Connection::StartConnection()
     }
     std::thread connectThread(&Connection::Connect, this);
     connectThread.detach();
+}
+
+void Connection::StartSlimeConnection(RefPtr<GUI> gui_)
+{
+  //  GetAndResetErrorState();
+
+    this->gui = gui_;
+    std::thread connectThread(&Connection::SlimeConnect, this);
+    connectThread.detach();
+}
+
+void Connection::SlimeConnect()
+{
+    // generate vector of tracker connection struct, connecting board ids to apropriate driver ids. In future, this should be done manualy in the gui
+    connectedTrackers.clear();
+
+    if (user_config.ignoreTracker0 && user_config.trackerNum == 3)
+    {
+        for (int i = 0; i < user_config.trackerNum - 1; i++)
+        {
+            TrackerConnection temp;
+            temp.TrackerId = i + 1;
+            temp.DriverId = i;
+            temp.Name = "ApriltagTracker" + std::to_string(i + 1);
+            connectedTrackers.push_back(temp);
+        }
+        connectedTrackers[0].Role = "TrackerRole_LeftFoot";
+        connectedTrackers[1].Role = "TrackerRole_RightFoot";
+    }
+    else if (user_config.ignoreTracker0)
+    {
+        for (int i = 0; i < user_config.trackerNum - 1; i++)
+        {
+            TrackerConnection temp;
+            temp.TrackerId = i + 1;
+            temp.DriverId = i;
+            temp.Name = "ApriltagTracker" + std::to_string(i + 1);
+            temp.Role = "TrackerRole_Waist";
+            connectedTrackers.push_back(temp);
+        }
+    }
+    else if (user_config.trackerNum == 3)
+    {
+        for (int i = 0; i < user_config.trackerNum; i++)
+        {
+            TrackerConnection temp;
+            temp.TrackerId = i;
+            temp.DriverId = i;
+            temp.Name = "ApriltagTracker" + std::to_string(i);
+            connectedTrackers.push_back(temp);
+        }
+        connectedTrackers[0].Role = "TrackerRole_Waist";
+        connectedTrackers[1].Role = "TrackerRole_LeftFoot";
+        connectedTrackers[2].Role = "TrackerRole_RightFoot";
+    }
+    else if (user_config.trackerNum == 2)
+    {
+        for (int i = 0; i < user_config.trackerNum; i++)
+        {
+            TrackerConnection temp;
+            temp.TrackerId = i;
+            temp.DriverId = i;
+            temp.Name = "ApriltagTracker" + std::to_string(i);
+            connectedTrackers.push_back(temp);
+        }
+        connectedTrackers[0].Role = "TrackerRole_LeftFoot";
+        connectedTrackers[1].Role = "TrackerRole_RightFoot";
+    }
+    else
+    {
+        for (int i = 0; i < user_config.trackerNum; i++)
+        {
+            TrackerConnection temp;
+            temp.TrackerId = i;
+            temp.DriverId = i;
+            temp.Name = "ApriltagTracker" + std::to_string(i + 1);
+            temp.Role = "TrackerRole_Waist";
+            connectedTrackers.push_back(temp);
+        }
+    }
+
+    if (!user_config.disableOpenVrApi)
+    {
+
+        // connect to steamvr as a client in order to get buttons.
+        //vr::EVRInitError error;
+        //openvr_handle = VR_Init(&error, vr::VRApplication_Overlay);
+
+        //if (error != vr::VRInitError_None)
+        //{
+        //    std::string ovrErr = vr::VR_GetVRInitErrorAsEnglishDescription(error);
+        //    SetError(ErrorCode::CLIENT_ERROR, std::move(ovrErr));
+        //    return;
+        //}
+
+        /*
+        vr::HmdMatrix34_t testZeroToStanding = openvr_handle->GetRawZeroPoseToStandingAbsoluteTrackingPose();
+
+        std::string e = "Zero pose to standing: \n ";
+        for (int i = 0; i < 3; i++)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                e += std::to_string(testZeroToStanding.m[i][j]) + ", ";
+            }
+            e += "\n";
+        }
+        wxMessageDialog dial(NULL,
+            e, wxT("Error"), wxOK | wxICON_ERROR);
+        dial.ShowModal();
+
+        vr::HmdMatrix34_t testStandingToSeated = openvr_handle->GetSeatedZeroPoseToStandingAbsoluteTrackingPose();
+
+        e = "Seated pose to standing: \n ";
+        for (int i = 0; i < 3; i++)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                e += std::to_string(testStandingToSeated.m[i][j]) + ", ";
+            }
+            e += "\n";
+        }
+        wxMessageDialog dial2(NULL,
+            e, wxT("Error"), wxOK | wxICON_ERROR);
+        dial2.ShowModal();
+
+        */
+        const auto bindingsPath = std::filesystem::absolute("bindings/att_actions.json");
+        //if (!std::filesystem::exists(bindingsPath))
+        //{
+        //    SetError(ErrorCode::BINDINGS_MISSING);
+        //    return;
+        //}
+        //vr::VRInput()->SetActionManifestPath(bindingsPath.generic_u8string().c_str());
+
+        //vr::VRInput()->GetActionHandle("/actions/demo/in/grab_camera", &m_actionCamera);
+        //vr::VRInput()->GetActionHandle("/actions/demo/in/grab_trackers", &m_actionTrackers);
+        //vr::VRInput()->GetActionHandle("/actions/demo/in/Hand_Left", &m_actionHand);
+
+        //vr::VRInput()->GetActionSetHandle("/actions/demo", &m_actionsetDemo);
+    }
+
+    std::istringstream ret;
+    std::string word;
+
+    //ret = Send("numtrackers");
+    //ret >> word;
+    //if (word != "numtrackers")
+    //{
+    //    SetError(ErrorCode::DRIVER_ERROR);
+    //    return;
+    //}
+    int connected_trackers;
+    ret >> connected_trackers;
+
+    ret >> word;
+    //SemVer reportedVersion = SemVer::Parse(word);
+    //if (!SemVer::Compatible(reportedVersion, utils::GetBridgeDriverVersion()))
+    //{
+    //    SetError(ErrorCode::DRIVER_MISMATCH, word);
+    //    return;
+    //}
+
+    for (int i = connected_trackers; i < connectedTrackers.size(); i++)
+    {
+       // ret = Send("addtracker " + connectedTrackers[i].Name + " " + connectedTrackers[i].Role);
+        ret >> word;
+        if (word != "added")
+        {
+            SetError(ErrorCode::SOMETHING_WRONG);
+            return;
+        }
+    }
+
+   // ret = Send("addstation");
+
+   // ret = Send("settings 120 " + std::to_string(user_config.smoothingFactor) + " " + std::to_string(user_config.additionalSmoothing));
+
+    // set that connection is established
+    status = CONNECTED;
 }
 
 void Connection::Connect()
@@ -298,7 +481,7 @@ int Connection::GetButtonStates()
 
 bool Connection::PollQuitEvent()
 {
-    if (user_config.disableOpenVrApi || status != CONNECTED)
+    if (user_config.disableOpenVrApi || status != CONNECTED || gui->MainApp->ConnectToSlimeVr || openvr_handle == nullptr)
         return false;
 
     vr::VREvent_t event;

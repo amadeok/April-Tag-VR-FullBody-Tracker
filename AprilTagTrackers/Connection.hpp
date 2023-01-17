@@ -8,6 +8,8 @@
 
 #include <memory>
 
+class GUI;
+
 struct TrackerConnection
 {
     int TrackerId;
@@ -57,7 +59,9 @@ public:
     };
 
     Connection(const UserConfig& user_config);
-    void StartConnection();
+    void StartConnection(RefPtr<GUI> gui_);
+    void StartSlimeConnection(RefPtr<GUI> gui_);
+
     std::istringstream Send(const std::string& buffer);
     std::istringstream SendTracker(int id, double a, double b, double c, double qw, double qx, double qy, double qz, double time, double smoothing);
     std::istringstream SendStation(int id, double a, double b, double c, double qw, double qx, double qy, double qz);
@@ -80,8 +84,13 @@ public:
     }
     const std::string& GetErrorMsg() { return errorMsg; }
 
+public:
+    RefPtr<GUI> gui;
+
 private:
     void Connect();
+    void SlimeConnect();
+
 
     void SetError(ErrorCode code, std::string msg = "");
 

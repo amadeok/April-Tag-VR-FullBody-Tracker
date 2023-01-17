@@ -5,7 +5,7 @@
 
 #include <functional>
 #include <sstream>
-
+#include "MyApp.hpp"
 // Application icon in source code, embedding an image as a string literal
 #include "resources/apriltag.xpm"
 
@@ -255,6 +255,12 @@ void GUI::MainFrame::CreateCameraPage(RefPtr<wxNotebook> pages)
             {
                 tracker->Start();
             }})
+       .Add(Button{ "Connect To SlimeVR", [this](auto&)
+        {
+       // tracker->gui->MainApp->ConnectToSlimeVr = true;
+        tracker->ConnectToSlimeVR();
+        
+            } })
         .Add(Button{"Preview output", [this](auto& evt)
             {
                 SetPreviewVisible(true);

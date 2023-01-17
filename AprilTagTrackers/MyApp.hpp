@@ -47,7 +47,7 @@ class MyApp : public wxApp
 
 public:
     void attachConsole();
-    bool ConnectToSlimeVr = true;
+    bool ConnectToSlimeVr = false;
     HANDLE SlimeVrPipeHandle = INVALID_HANDLE_VALUE;
 
     //int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR pCmdLine, int nCmdShow);

@@ -21,6 +21,8 @@ public:
     virtual void StartCameraCalib() = 0;
     virtual void StartTrackerCalib() = 0;
     virtual void StartConnection() = 0;
+    virtual void ConnectToSlimeVR() = 0;
+
     virtual void Start() = 0;
     virtual void Stop() = 0;
     virtual void UpdateConfig() = 0;

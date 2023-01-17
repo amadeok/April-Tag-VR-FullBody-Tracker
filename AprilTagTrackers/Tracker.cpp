@@ -638,7 +638,7 @@ void Tracker::StartTrackerCalib()
 
 void Tracker::StartConnection()
 {
-    connection->StartConnection();
+    connection->StartConnection(this->gui);
     gui->SetStatus(true, StatusItem::Driver);
 }
 
@@ -843,7 +843,7 @@ void Tracker::CalibrateTracker()
 
 
                         cv::Quatd q = cv::Quatd::createFromRvec(boardRvec[i]);
-
+                         //CALIB
 
                         q = cv::Quatd{ 0, 0, 1, 0 } *(wrotation * q) * cv::Quatd{ 0, 0, 1, 0 };
 
@@ -852,7 +852,8 @@ void Tracker::CalibrateTracker()
                         memcpy(pipeBuffer + 41, &q.y, 8);
                         memcpy(pipeBuffer + 49, &q.z, 8);
 
-                        pipe_write(gui->MainApp->SlimeVrPipeHandle, pipeBuffer, 57, nbWritten);
+                        if (gui->MainApp->ConnectToSlimeVr)
+                            SlimePipe(pipeBuffer);
                     }
 
 
@@ -1584,4 +1585,757 @@ void Tracker::MainLoop()
         }
         // time of marker detection
     }
+}
+
+
+
+
+
+
+
+void Tracker::MainSlimeLoop()
+{
+
+    size_t trackerNum = connection->connectedTrackers.size();
+    int numOfPrevValues = user_config.numOfPrevValues;
+
+    SetWorldTransform(user_config.manualCalib.GetAsReal());
+
+    // these variables are used to save detections of apriltags, so we dont define them every frame
+
+    std::vector<int> ids;
+    std::vector<std::vector<cv::Point2f>> corners;
+    std::vector<cv::Point2f> centers;
+
+    cv::Mat image, drawImg, outImg, ycc, gray, cr;
+
+    cv::Mat prevImg;
+
+    // setup all variables that need to be stored for each tracker and initialize them
+    std::vector<TrackerStatus> trackerStatus = std::vector<TrackerStatus>(trackerNum, TrackerStatus());
+    for (int i = 0; i < trackerStatus.size(); i++)
+    {
+        trackerStatus[i].boardFound = false;
+        trackerStatus[i].boardRvec = cv::Vec3d(0, 0, 0);
+        trackerStatus[i].boardTvec = cv::Vec3d(0, 0, 0);
+        trackerStatus[i].prevLocValues = std::vector<std::vector<double>>(7, std::vector<double>());
+    }
+
+    // previous values, used for moving median to remove any outliers.
+    std::vector<double> prevLocValuesX;
+
+    // the X axis, it is simply numbers 0-10 (or the amount of previous values we have)
+    for (int j = 0; j < numOfPrevValues; j++)
+    {
+        prevLocValuesX.push_back(j);
+    }
+
+    AprilTagWrapper april{ user_config, aruco_config };
+
+    int framesSinceLastSeen = 0;
+    int framesToCheckAll = 20;
+
+    // calculate position of camera from calibration data and send its position to steamvr
+    cv::Vec3d stationPos = wtransform.translation();
+    CoordTransformOVR(stationPos);
+
+    cv::Quatd stationQ = cv::Quatd(0, 0, 1, 0) * (wrotation * cv::Quatd(1, 0, 0, 0));
+
+    connection->SendStation(0, stationPos[0], stationPos[1], stationPos[2], stationQ[0], stationQ[1], stationQ[2], stationQ[3]);
+
+    // initialize variables for playspace calibration
+    bool calibControllerPosActive = false;
+    bool calibControllerAngleActive = false;
+    auto calibControllerLastPress = std::chrono::steady_clock::now();
+    /// offset of controller to virtual camera, set when button is pressed
+    cv::Vec3d calibControllerPosOffset = { 0, 0, 0 };
+    /// (pitch, yaw) in radians, 3rd component is distance
+    cv::Vec3d calibControllerAngleOffset = { 0, 0, 0 };
+
+    std::vector<cv::Ptr<cv::aruco::Board>> trackers;
+    std::vector<std::vector<int>> boardIds;
+    std::vector<std::vector<std::vector<cv::Point3f>>> boardCorners;
+
+    RefPtr<cfg::CameraCalibration> camCalib = calib_config.cameras[0];
+    RefPtr<cfg::VideoStream> videoStream = user_config.videoStreams[0];
+
+    // by default, trackers have the center at the center of the main marker. If "Use centers of trackers" is checked, we move it to the center of all marker corners.
+    if (user_config.trackerCalibCenters)
+    {
+        for (int i = 0; i < this->trackers.size(); i++)
+        {
+            boardCorners.push_back(this->trackers[i]->objPoints);
+            boardIds.push_back(this->trackers[i]->ids);
+
+            cv::Point3f boardCenter = cv::Point3f(0, 0, 0);
+            int numOfCorners = 0;
+            for (int j = 0; j < boardCorners[i].size(); j++)
+            {
+                for (int k = 0; k < boardCorners[i][j].size(); k++)
+                {
+                    boardCenter.x += boardCorners[i][j][k].x;
+                    boardCenter.y += boardCorners[i][j][k].y;
+                    boardCenter.z += boardCorners[i][j][k].z;
+                    numOfCorners++;
+                }
+            }
+            boardCenter /= numOfCorners;
+
+            for (int j = 0; j < boardCorners[i].size(); j++)
+            {
+                for (int k = 0; k < boardCorners[i][j].size(); k++)
+                {
+                    boardCorners[i][j][k] -= boardCenter;
+                }
+            }
+
+            cv::Ptr<cv::aruco::Board> arBoard = cv::aruco::Board::create(boardCorners[i], cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50), boardIds[i]);
+            trackers.push_back(arBoard);
+        }
+    }
+    else
+    {
+        trackers = this->trackers;
+    }
+    char pipeBuffer[300];
+    int nbWritten = 0;
+    int frameCount = 0;
+    while (mainThreadRunning && cameraRunning) // run detection until camera is stopped or the start/stop button is pressed again
+    {
+        
+        frameCount += 1;
+        //if (frameCount % 2 == 0) {
+        //    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        //    continue;
+        //}
+        //else {
+        //    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        //    continue;
+        //}
+        CopyFreshCameraImageTo(image);
+        // shallow copy, gray will be cloned from image and used for detection,
+        // so drawing can happen on color image without clone.
+        drawImg = image;
+        april.convertToSingleChannel(image, gray);
+
+        std::chrono::steady_clock::time_point start, end;
+        // for timing our detection
+        start = std::chrono::steady_clock::now();
+
+        bool circularWindow = videoStream->circularWindow;
+
+        // if any tracker was lost for longer than 20 frames, mark circularWindow as false
+        for (int i = 0; i < trackerNum; i++)
+        {
+            if (!trackerStatus[i].boardFound)
+            {
+                framesSinceLastSeen++;
+                if (framesSinceLastSeen > framesToCheckAll)
+                    circularWindow = false;
+                break;
+            }
+        }
+        if (!circularWindow)
+            framesSinceLastSeen = 0;
+
+        for (int i = 0; i < trackerNum; i++)
+        {
+
+            double frameTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - last_frame_time).count();
+
+            std::string word;
+            std::istringstream ret = connection->Send("gettrackerpose " + std::to_string(i) + " " + std::to_string(-frameTime - videoStream->latency));
+            ret >> word;
+            if (word != "trackerpose")
+            {
+                continue;
+            }
+
+            // first three variables are a position vector
+            int idx;
+            double a;
+            double b;
+            double c;
+
+            // second four are rotation quaternion
+            double qw;
+            double qx;
+            double qy;
+            double qz;
+
+            // last is if pose is valid: 0 is valid, 1 is late (hasnt been updated for more than 0.2 secs), -1 means invalid and is only zeros
+            int tracker_pose_valid;
+
+            // read to our variables
+            ret >> idx;
+            ret >> a;
+            ret >> b;
+            ret >> c;
+            ret >> qw;
+            ret >> qx;
+            ret >> qy;
+            ret >> qz;
+            ret >> tracker_pose_valid;
+
+            cv::Vec3d rpos{ a, b, c };
+            CoordTransformOVR(rpos);
+
+            // transform boards position from steamvr space to camera space based on our calibration data
+
+            rpos = wtransform.inv() * rpos;
+            std::vector<cv::Point3d> point;
+            point.push_back(cv::Point3d(rpos[0], rpos[1], rpos[2]));
+            point.push_back(cv::Point3d(trackerStatus[i].boardTvec));
+
+            std::vector<cv::Point2d> projected;
+            cv::Vec3d rvec, tvec;
+
+            // project point from position of tracker in camera 3d space to 2d camera pixel space, and draw a dot there
+            cv::projectPoints(point, rvec, tvec, camCalib->cameraMatrix, camCalib->distortionCoeffs, projected);
+
+            cv::circle(drawImg, projected[0], 5, cv::Scalar(0, 0, 255), 2, 8, 0);
+
+            if (tracker_pose_valid == 0) // if the pose from steamvr was valid, save the predicted position and rotation
+            {
+                cv::Quatd q{ qw, qx, qy, qz };
+
+                /// TODO: What is this?
+                q = wrotation.inv(cv::QUAT_ASSUME_UNIT) *
+                    cv::Quatd(0, 0, 1, 0).inv(cv::QUAT_ASSUME_UNIT) *
+                    q.normalize() *
+                    cv::Quatd(0, 0, 1, 0).inv(cv::QUAT_ASSUME_UNIT);
+
+                cv::Vec3d rvec = q.toRotVec();
+                cv::Vec3d tvec{ rpos[0], rpos[1], rpos[2] };
+
+                cv::aruco::drawAxis(drawImg, camCalib->cameraMatrix, camCalib->distortionCoeffs, rvec, tvec, 0.10f);
+
+                if (!trackerStatus[i].boardFound) // if tracker was found in previous frame, we use that position for masking. If not, we use position from driver for masking.
+                {
+                    trackerStatus[i].maskCenter = projected[0];
+                }
+                else
+                {
+                    trackerStatus[i].maskCenter = projected[1];
+                }
+
+                trackerStatus[i].boardFound = true;
+                trackerStatus[i].boardFoundDriver = true;
+                trackerStatus[i].boardTvec = tvec;
+                trackerStatus[i].boardTvecDriver = tvec;
+                trackerStatus[i].boardRvec = rvec;
+            }
+            else
+            {
+                if (trackerStatus[i].boardFound) // if pose is not valid, set everything based on previous known position
+                {
+                    trackerStatus[i].maskCenter = projected[1];
+                }
+
+                trackerStatus[i].boardFoundDriver = false; // do we really need to do this? might be unnecessary
+            }
+        }
+
+        // define our mask image. We want to create an image where everything but circles around predicted tracker positions will be black to speed up detection.
+        cv::Mat mask = cv::Mat::zeros(gray.size(), gray.type());
+
+        cv::Mat dstImage = cv::Mat::zeros(gray.size(), gray.type());
+
+        int size = static_cast<int>(std::trunc(gray.rows * videoStream->searchWindow));
+
+        bool doMasking = false;
+
+        for (int i = 0; i < trackerNum; i++) // calculate the needed masks for every tracker
+        {
+            if (trackerStatus[i].maskCenter.x <= 0 || trackerStatus[i].maskCenter.y <= 0 || trackerStatus[i].maskCenter.x >= image.cols || trackerStatus[i].maskCenter.y >= image.rows)
+            {
+                trackerStatus[i].boardFound = false; // if detected tracker is out of view of the camera, we mark it as not found, as either the prediction is wrong or we wont see it anyway
+                continue;
+            }
+            doMasking = true;
+            if (circularWindow) // if circular window is set mask a circle around the predicted tracker point
+            {
+                cv::circle(mask, trackerStatus[i].maskCenter, size, cv::Scalar(255, 0, 0), -1, 8, 0);
+                cv::circle(drawImg, trackerStatus[i].maskCenter, size, cv::Scalar(255, 0, 0), 2, 8, 0);
+            }
+            else // if not, mask a vertical strip top to bottom. This happens every 20 frames if a tracker is lost.
+            {
+                int maskCenter = static_cast<int>(std::trunc(trackerStatus[i].maskCenter.x));
+                rectangle(mask, cv::Point(maskCenter - size, 0), cv::Point(maskCenter + size, image.rows), cv::Scalar(255, 0, 0), -1);
+                rectangle(drawImg, cv::Point(maskCenter - size, 0), cv::Point(maskCenter + size, image.rows), cv::Scalar(255, 0, 0), 3);
+            }
+        }
+
+        // using copyTo with masking creates the image where everything but the locations where trackers are predicted to be is black
+        if (doMasking)
+        {
+            gray.copyTo(dstImage, mask);
+            gray = dstImage;
+        }
+
+        if (manualRecalibrate) // playspace calibration loop
+        {
+            int inputButton = connection->GetButtonStates();
+            cfg::ManualCalib::Real calib = gui->GetManualCalib();
+
+            double timeSincePress = std::chrono::duration<double>(start - calibControllerLastPress).count();
+            if (timeSincePress > 60) // we exit playspace calibration after 60 seconds of no input detected, to try to prevent accidentaly ruining calibration
+            {
+                gui->SetManualCalibVisible(false);
+            }
+
+            if (inputButton == 1) // logic for position button
+            {
+                // to prevent accidental double presses, 0.2 seconds must pass between presses.
+                double timeSincePress = std::chrono::duration<double>(start - calibControllerLastPress).count();
+                if (timeSincePress >= 0.2)
+                {
+                    if (!calibControllerPosActive) // if position calibration is inactive, set it to active and calculate offsets between the camera and controller
+                    {
+                        calibControllerPosActive = true;
+                        Pose pose = connection->GetControllerPose();
+                        calibControllerPosOffset = pose.position - calib.posOffset;
+
+                        RotateVecByQuat(calibControllerPosOffset, pose.rotation.inv(cv::QUAT_ASSUME_UNIT));
+                    }
+                    else // else, deactivate it
+                    {
+                        calibControllerPosActive = false;
+                    }
+                }
+                calibControllerLastPress = std::chrono::steady_clock::now();
+            }
+            else if (inputButton == 2) // logic for rotation button
+            {
+                // to prevent accidental double presses, 0.2 seconds must pass between presses.
+                double timeSincePress = std::chrono::duration<double>(start - calibControllerLastPress).count();
+                if (timeSincePress >= 0.2)
+                {
+                    if (!calibControllerAngleActive) // if rotation calibration is inactive, set it to active and calculate angle offsets and distance
+                    {
+                        calibControllerAngleActive = true;
+                        Pose pose = connection->GetControllerPose();
+
+                        cv::Vec2d angle = EulerAnglesFromPos(pose.position, calib.posOffset);
+                        double distance = Distance(pose.position, calib.posOffset);
+
+                        calibControllerAngleOffset[0] = angle[0] - calib.angleOffset[0];
+                        calibControllerAngleOffset[1] = angle[1] - calib.angleOffset[1];
+                        calibControllerAngleOffset[2] = distance / calib.scale;
+                    }
+                    else // else, deactivate it
+                    {
+                        calibControllerAngleActive = false;
+                    }
+                }
+                calibControllerLastPress = std::chrono::steady_clock::now();
+            }
+
+            if (calibControllerPosActive) // while position calibration is active, apply the camera to controller offset to X, Y and Z values
+            {
+                Pose pose = connection->GetControllerPose();
+
+                RotateVecByQuat(calibControllerPosOffset, pose.rotation);
+
+                calib.posOffset[0] = pose.position[0] - calibControllerPosOffset[0];
+                if (!lockHeightCalib)
+                {
+                    calib.posOffset[1] = pose.position[1] - calibControllerPosOffset[1];
+                }
+                calib.posOffset[2] = pose.position[2] - calibControllerPosOffset[2];
+
+                RotateVecByQuat(calibControllerPosOffset, pose.rotation.inv(cv::QUAT_ASSUME_UNIT));
+            }
+
+            if (calibControllerAngleActive) // while rotation calibration is active, apply the camera to controller angle offsets to A, B, C values, and apply the calibScale based on distance from camera
+            {
+                Pose pose = connection->GetControllerPose();
+                cv::Vec2d angle = EulerAnglesFromPos(pose.position, calib.posOffset);
+                double distance = Distance(pose.position, calib.posOffset);
+
+                calib.angleOffset[1] = angle[1] - calibControllerAngleOffset[1];
+                if (!lockHeightCalib) // if height is locked, do not calibrate up/down rotation or scale
+                {
+                    calib.angleOffset[0] = angle[0] - calibControllerAngleOffset[0];
+                    calib.scale = distance / calibControllerAngleOffset[2];
+                }
+            }
+
+            // check that camera is facing correct direction. 90 degrees mean looking straight down, 270 is straight up. This ensures its not upside down.
+            if (calib.angleOffset[0] < 91 * DEG_2_RAD)
+                calib.angleOffset[0] = 91 * DEG_2_RAD;
+            else if (calib.angleOffset[0] > 269 * DEG_2_RAD)
+                calib.angleOffset[0] = 269 * DEG_2_RAD;
+
+            if (calibControllerAngleActive || calibControllerPosActive)
+            {
+                // update the calib in the gui as it wont be modified anymore
+                gui->SetManualCalib(calib);
+            }
+            // update the pre calculated calibration transformations
+            SetWorldTransform(gui->GetManualCalib());
+
+            cv::Vec3d stationPos = wtransform.translation();
+            CoordTransformOVR(stationPos);
+            // rotate y axis by 180 degrees, aka, reflect across xz plane
+            cv::Quatd stationQ = cv::Quatd(0, 0, 1, 0) * wrotation;
+
+            // move the camera in steamvr to new calibration
+            connection->SendStation(0, stationPos[0], stationPos[1], stationPos[2], stationQ.w, stationQ.x, stationQ.y, stationQ.z);
+        }
+        else
+        {
+            calibControllerLastPress = std::chrono::steady_clock::now();
+        }
+        april.detectMarkers(gray, &corners, &ids, &centers, trackers);
+        for (int i = 0; i < trackerNum; ++i)
+        {
+
+            // estimate the pose of current board
+
+            try
+            {
+                trackerStatus[i].boardTvec /= wscale;
+                if (cv::aruco::estimatePoseBoard(corners, ids, trackers[connection->connectedTrackers[i].TrackerId], camCalib->cameraMatrix, camCalib->distortionCoeffs, trackerStatus[i].boardRvec, trackerStatus[i].boardTvec, trackerStatus[i].boardFound && user_config.usePredictive) <= 0)
+                {
+                    for (int j = 0; j < 6; j++)
+                    {
+                        // remove first of the previously saved values
+                        if (trackerStatus[i].prevLocValues[j].size() > 0)
+                            trackerStatus[i].prevLocValues[j].erase(trackerStatus[i].prevLocValues[j].begin());
+                    }
+                    trackerStatus[i].boardFound = false;
+
+                    continue;
+                }
+            }
+            catch (const std::exception& e)
+            {
+                // on rare occasions, detection crashes. Should be very rare and indicate something wrong with camera or tracker calibration
+                ATT_LOG_ERROR(e.what());
+                gui->ShowPopup(lc.TRACKER_DETECTION_SOMETHINGWRONG, PopupStyle::Error);
+                mainThreadRunning = false;
+                return;
+            }
+            trackerStatus[i].boardFound = true;
+
+            trackerStatus[i].boardTvec *= wscale;
+
+            if (user_config.depthSmoothing > 0 && trackerStatus[i].boardFoundDriver && !manualRecalibrate)
+            {
+                // depth estimation is noisy, so try to smooth it more, especialy if using multiple cameras
+                // if position is close to the position predicted by the driver, take the depth of the driver.
+                // if error is big, take the calculated depth
+                // error threshold is defined in the params as depth smoothing
+
+                double distDriver = Length(trackerStatus[i].boardTvecDriver);
+                double distPredict = Length(trackerStatus[i].boardTvec);
+
+                cv::Vec3d normPredict = trackerStatus[i].boardTvec / distPredict;
+
+                double dist = std::abs(distPredict - distDriver);
+
+                dist = dist / user_config.depthSmoothing + 0.1;
+                if (dist > 1)
+                    dist = 1;
+
+                double distFinal = (dist)*distPredict + (1 - dist) * distDriver;
+
+                trackerStatus[i].boardTvec = normPredict * distFinal;
+
+                // trackerStatus[i].boardTvec[2] = (dist) * trackerStatus[i].boardTvec[2] + (1-dist) * trackerStatus[i].boardTvecDriver[2];
+            }
+
+            double posValues[6] = {
+                trackerStatus[i].boardTvec[0],
+                trackerStatus[i].boardTvec[1],
+                trackerStatus[i].boardTvec[2],
+                trackerStatus[i].boardRvec[0],
+                trackerStatus[i].boardRvec[1],
+                trackerStatus[i].boardRvec[2] };
+
+            for (int j = 0; j < 6; j++)
+            {
+                // push new values into previous values list end and remove the one on beggining
+                trackerStatus[i].prevLocValues[j].push_back(posValues[j]);
+                if (trackerStatus[i].prevLocValues[j].size() > numOfPrevValues)
+                {
+                    trackerStatus[i].prevLocValues[j].erase(trackerStatus[i].prevLocValues[j].begin());
+                }
+
+                std::vector<double> valArray(trackerStatus[i].prevLocValues[j]);
+                // sort(valArray.begin(), valArray.end());
+
+                // posValues[j] = valArray[valArray.size() / 2];
+                posValues[j] = valArray[valArray.size() - 1];
+            }
+            // save fitted values back to our variables
+            trackerStatus[i].boardTvec[0] = posValues[0];
+            trackerStatus[i].boardTvec[1] = posValues[1];
+            trackerStatus[i].boardTvec[2] = posValues[2];
+            trackerStatus[i].boardRvec[0] = posValues[3];
+            trackerStatus[i].boardRvec[1] = posValues[4];
+            trackerStatus[i].boardRvec[2] = posValues[5];
+
+            cv::Vec3d rpos = trackerStatus[i].boardTvec;
+
+            // transform boards position based on our calibration data
+            rpos = wtransform * rpos;
+            CoordTransformOVR(rpos);
+
+            // convert rodriguez rotation to quaternion
+            cv::Quatd q = cv::Quatd::createFromRvec(trackerStatus[i].boardRvec);
+
+            // cv::aruco::drawAxis(drawImg, user_config.camMat, user_config.distCoeffs, boardRvec[i], boardTvec[i], 0.05);
+
+            q = cv::Quatd{ 0, 0, 1, 0 } *(wrotation * q) * cv::Quatd{ 0, 0, 1, 0 };
+
+            float x = trackerStatus[i].boardRvec[0];
+            float y = trackerStatus[i].boardRvec[1];
+            float z = trackerStatus[i].boardRvec[2];
+            //ATT_LOG_ERROR(buf);
+            //gui->MainApp->print(buf);
+            if (gui->MainApp->ConnectToSlimeVr) {
+
+                pipeBuffer[0] = 1;
+                memcpy(pipeBuffer + 1, &trackerStatus[i].boardRvec[0], 8);
+                memcpy(pipeBuffer + 9, &trackerStatus[i].boardRvec[1], 8);
+                memcpy(pipeBuffer + 17, &trackerStatus[i].boardRvec[2], 8);
+
+                //cv::Quatd q = cv::Quatd::createFromRvec(trackerStatus[i].boardRvec);
+
+                //q = cv::Quatd{ 0, 0, 1, 0 } *(wrotation * q) * cv::Quatd{ 0, 0, 1, 0 };
+
+                memcpy(pipeBuffer + 25, &q.w, 8);
+                memcpy(pipeBuffer + 33, &q.x, 8);
+                memcpy(pipeBuffer + 41, &q.y, 8);
+                memcpy(pipeBuffer + 49, &q.z, 8);
+
+            }
+
+
+
+            double factor = user_config.smoothingFactor;
+
+            if (factor < 0)
+                factor = 0;
+            else if (factor >= 1)
+                factor = 0.99;
+
+            end = std::chrono::steady_clock::now();
+            double frameTime = std::chrono::duration<double>(end - last_frame_time).count();
+
+            // Reject detected positions that are behind the camera
+            if (trackerStatus[i].boardTvec[2] < 0)
+            {
+                trackerStatus[i].boardFound = false;
+                if (gui->MainApp->ConnectToSlimeVr)
+                        SlimePipe(pipeBuffer);
+
+                continue;
+            }
+
+            // Figure out the camera aspect ratio, XZ and YZ ratio limits
+            double aspectRatio = static_cast<double>(image.cols) / static_cast<double>(image.rows);
+            double XZratioLimit = 0.5 * static_cast<double>(image.cols) / camCalib->cameraMatrix.at<double>(0, 0);
+            double YZratioLimit = 0.5 * static_cast<double>(image.rows) / camCalib->cameraMatrix.at<double>(1, 1);
+
+            // Figure out whether X or Y dimension is most likely to go outside the camera field of view
+            if (std::abs(trackerStatus[i].boardTvec[0] / trackerStatus[i].boardTvec[1]) > aspectRatio)
+            {
+                // Reject detections when XZ coordinate ratio goes out of camera FOV
+                if (std::abs(trackerStatus[i].boardTvec[0] / trackerStatus[i].boardTvec[2]) > XZratioLimit)
+                {
+                    trackerStatus[i].boardFound = false;
+                    if (gui->MainApp->ConnectToSlimeVr)
+                        SlimePipe(pipeBuffer);
+                    continue;
+                }
+            }
+            else
+            {
+                // Reject detections when YZ coordinate ratio goes out of camera FOV
+                if (std::abs(trackerStatus[i].boardTvec[1] / trackerStatus[i].boardTvec[2]) > YZratioLimit)
+                {
+                    trackerStatus[i].boardFound = false;
+                    if (gui->MainApp->ConnectToSlimeVr)
+                        SlimePipe(pipeBuffer);
+                    continue;
+                }
+            }
+
+            // send all the values
+            // frame time is how much time passed since frame was acquired.
+            if (!multicamAutocalib)
+                connection->SendTracker(connection->connectedTrackers[i].DriverId, rpos[0], rpos[1], rpos[2], q.w, q.x, q.y, q.z, -frameTime - videoStream->latency, factor);
+            else if (trackerStatus[i].boardFoundDriver)
+            {
+                // if calibration refinement with multiple cameras is active, do not send calculated poses to driver.
+                // instead, refine the calibration data with gradient descent
+                // the error is the diffrence of the detected trackers position to the estimated trackers position
+                // numerical derivatives are then calculated to see how X,Y,Z, A,B, scale data affects the error in position
+                // calibration values are then slightly changed in the estimated direction in order to reduce error.
+                // after a couple of seconds, the calibration data should converge
+
+                cv::Vec3d pos = trackerStatus[i].boardTvec;
+                cv::Vec2d angles = EulerAnglesFromPos(pos);
+                double length = Length(pos);
+
+                cv::Vec3d driverPos = trackerStatus[i].boardTvecDriver;
+                cv::Vec2d driverAngles = EulerAnglesFromPos(driverPos);
+                double driverLength = Length(driverPos);
+
+                pos = wtransform * pos;
+                driverPos = wtransform * driverPos;
+
+                CoordTransformOVR(pos);
+                CoordTransformOVR(driverPos);
+
+                double dX = (pos[0] - driverPos[0]) * 0.1;
+                double dY = -(pos[1] - driverPos[1]) * 0.1;
+                double dZ = (pos[2] - driverPos[2]) * 0.1;
+
+                if (abs(dX) > 0.01)
+                    dX = 0.1 * (dX / abs(dX));
+                if (abs(dY) > 0.1)
+                    dY = 0.1 * (dY / abs(dY));
+                if (abs(dZ) > 0.1)
+                    dZ = 0.1 * (dZ / abs(dZ));
+
+                cfg::ManualCalib::Real calib = gui->GetManualCalib();
+
+                calib.posOffset += cv::Vec3d(dX, dY, dZ);
+                calib.angleOffset += cv::Vec3d(angles[0] - driverAngles[0], angles[1] - driverAngles[1]) * 0.1;
+                calib.scale -= (1 - (driverLength / length)) * 0.1;
+
+                gui->SetManualCalib(calib);
+                SetWorldTransform(calib);
+            }
+            if (gui->MainApp->ConnectToSlimeVr)
+                SlimePipe(pipeBuffer);
+                
+        }
+
+        // draw and display the detections
+        if (ids.size() > 0)
+            cv::aruco::drawDetectedMarkers(drawImg, corners, ids);
+
+        end = std::chrono::steady_clock::now();
+        double frameTime = std::chrono::duration<double>(end - start).count();
+
+        if (gui->IsPreviewVisible())
+        {
+            int cols, rows;
+            if (image.cols > image.rows)
+            {
+                cols = image.cols * drawImgSize / image.rows;
+                rows = drawImgSize;
+            }
+            else
+            {
+                cols = drawImgSize;
+                rows = image.rows * drawImgSize / image.cols;
+            }
+
+            cv::resize(drawImg, outImg, cv::Size(cols, rows));
+            cv::putText(outImg, std::to_string(frameTime).substr(0, 5), cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255, 255, 255));
+            if (showTimeProfile)
+            {
+                april.drawTimeProfile(outImg, cv::Point(10, 60));
+            }
+            gui->UpdatePreview(outImg);
+        }
+        // time of marker detection
+    }
+    if (gui->MainApp->ConnectToSlimeVr)
+        ClosePipe();
+
+}
+
+void Tracker::ClosePipe()
+{
+    wxLogMessage(std::string("closing pipe " +  GetLastErrorAsString()).c_str());
+
+    try {
+    bool ret = CloseHandle(gui->MainApp->SlimeVrPipeHandle);
+    auto s = GetLastErrorAsString();
+    ret = DisconnectNamedPipe(gui->MainApp->SlimeVrPipeHandle);
+    s = GetLastErrorAsString();
+    }
+    catch (...) {
+    }
+    gui->MainApp->ConnectToSlimeVr = false;
+    mainThreadRunning = false;
+}
+
+void Tracker::SlimePipe(char* pipeBuffer)
+{
+    int nbWritten = 0;
+    char signal = 0;
+    bool ret = pipe_read(gui->MainApp->SlimeVrPipeHandle, &signal, 1, nbWritten);
+    if (signal == 99 || !ret) {
+        ClosePipe();
+        return;
+    }
+
+    if (!pipe_write(gui->MainApp->SlimeVrPipeHandle, pipeBuffer, 57, nbWritten)) 
+    {
+        ClosePipe();
+    }
+}
+
+void Tracker::ConnectToSlimeVR()
+{
+    //try {
+    //    bool ret = CloseHandle(gui->MainApp->SlimeVrPipeHandle);
+    //    ret = DisconnectNamedPipe(gui->MainApp->SlimeVrPipeHandle);
+    //}
+    //catch (...) {
+    //}
+    if (!cameraRunning)
+    {
+       gui->ShowPopup("Camera Not Running", PopupStyle::Error);
+       return;
+    }
+    
+    int gb = 0;
+    // char* pipe_path = (char*)malloc(500);
+     //sprintf(pipe_path, "%s%d", "\\\\.\\pipe\\tparser_main_pipe_id_", 0);
+     //if (gui->MainApp->ConnectToSlimeVr) 
+     //{
+    wchar_t pipe_path[500];
+    swprintf(pipe_path, L"%s%d", L"\\\\.\\pipe\\slimevr_april_pipe_", 0);
+    LPCWSTR P = L"\\\\.\\pipe\\slimevr_april_pipe_0";
+    gui->MainApp->SlimeVrPipeHandle = create_pipe(P, true, true, 0, 0);
+    char buf[1] = { 99 };
+    DWORD nbWritten = 0;
+    if (gui->MainApp->SlimeVrPipeHandle != INVALID_HANDLE_VALUE) {
+        pipe_write(gui->MainApp->SlimeVrPipeHandle, buf, 1, nbWritten);
+        buf[0] = 0;
+        pipe_read(gui->MainApp->SlimeVrPipeHandle, buf, 1, nbWritten);
+        if (buf[0] == 99) {
+            wxLogMessage("Connection to Slime VR succesful");
+            gui->MainApp->ConnectToSlimeVr = true;
+
+            connection->StartSlimeConnection(this->gui);
+
+            mainThreadRunning = true;
+            mainThread = std::thread(&Tracker::MainSlimeLoop, this);
+            mainThread.detach();
+        }
+        else
+        {
+            wxLogMessage("Connection to Slime VR NOT succesful");
+            gui->MainApp->ConnectToSlimeVr = false;
+        }
+
+    }
+    else
+    {
+        ClosePipe();
+        wxLogMessage("Connection to Slime VR NOT succesful");
+    }
+
+
+    // }
 }

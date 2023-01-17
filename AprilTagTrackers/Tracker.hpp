@@ -34,13 +34,20 @@ public:
     void StartCameraCalib() override;
     void StartTrackerCalib() override;
     void StartConnection() override;
+
     void Start() override;
     void Stop() override;
     void UpdateConfig() override;
+    void ClosePipe();
+    void SlimePipe(char* pipeBuffer);
 
     bool mainThreadRunning = false;
     bool cameraRunning = false;
     bool showTimeProfile = false;
+    void MainSlimeLoop();
+    void ConnectToSlimeVR() override;
+    //bool bSlimeVRMode = false;
+
 
 private:
     void CameraLoop();
